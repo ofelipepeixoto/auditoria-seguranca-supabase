@@ -1,5 +1,7 @@
 # Auditoria de segurança para projetos Supabase
 
+> **Fork de estudo Radar:** scripts com plano por padrão, escopo explícito e instalação automática desativada. Leia [contrato, testes e limites](docs/fork-radar.md) antes de usar os comandos upstream abaixo.
+
 **Descubra se o seu sistema está vazando dados de clientes e corrija sem quebrar nada.**
 
 Este repositório é o roteiro que usamos para auditar e endurecer um sistema real em produção: painel administrativo,

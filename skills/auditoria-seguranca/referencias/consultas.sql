@@ -52,7 +52,9 @@ select tablename, policyname, cmd, qual
 from pg_policies
 where schemaname = 'public' and qual ~* 'token[a-z_]*\s+is\s+not\s+null';
 
--- §2d. Policies de UPDATE sem WITH CHECK (permite reatribuir a linha a outro dono)
+-- §2d. Candidatas a revisão: UPDATE sem WITH CHECK explícito
+-- Ausência não prova falha: PostgreSQL reutiliza USING como WITH CHECK.
+-- Avalie grants, composição de policies e testes de troca de proprietário por perfil.
 select tablename, policyname, roles, qual
 from pg_policies
 where schemaname = 'public' and cmd in ('UPDATE','ALL') and with_check is null;
@@ -154,7 +156,7 @@ where n.nspname = 'public' and p.prosecdef
 
 
 -- §9. Crons com chave escrita no comando (a chave fica legível no banco) -------------------------------
-select jobname, schedule, left(command, 120) as inicio_do_comando
+select jobname, schedule, true as candidato_a_segredo_no_comando
 from cron.job
 where command ~* '(bearer\s+ey|service_role|apikey)';
 

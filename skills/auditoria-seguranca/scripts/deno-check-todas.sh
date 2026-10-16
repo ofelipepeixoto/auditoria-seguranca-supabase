@@ -26,3 +26,9 @@ done
 echo "Resumo: $ok ok, $falhou com erro."
 echo "Leia cada erro: muitos são só de tipagem (consultas viram 'never'), mas 'Expected 2 arguments, but got 1'"
 echo "e 'Cannot find name' costumam ser bug de verdade."
+if (( ok + falhou == 0 )); then
+  echo "Nenhuma função encontrada; verificação não realizada."
+  exit 2
+fi
+(( falhou == 0 )) || exit 1
+exit 0
