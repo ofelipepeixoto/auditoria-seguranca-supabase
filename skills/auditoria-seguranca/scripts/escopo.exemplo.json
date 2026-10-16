@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "origin": "https://PROJETO-DESCARTAVEL.supabase.co",
+  "disposable_environment": true,
+  "requests": [
+    {"path": "/rest/v1/fixture?select=*&limit=5", "method": "GET"},
+    {"path": "/functions/v1/fixture", "method": "GET", "fixture_only": true}
+  ]
+}

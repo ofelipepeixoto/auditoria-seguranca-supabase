@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Procura VALORES de segredos no código atual e no HISTÓRICO do git. Não imprime os valores: só arquivo,
-# linha e tipo. Para JWT, diz o papel (anon = chave pública, normal; service_role = chave-mestra, problema).
+# linha e tipo quando disponíveis; buscas contextuais mostram apenas arquivos. Para JWT, diz o papel (anon = chave pública, normal; service_role = chave-mestra, problema).
 # Uso:  bash procurar-segredos.sh [raiz-do-projeto]
 # Para uma varredura mais completa, use também gitleaks ou trufflehog (ver referencias/ferramentas.md).
 set -u
@@ -32,7 +32,7 @@ while IFS= read -r linha; do
       *) echo "  $arq:$num  JWT role=${papel:-?}  <-- revisar";;
     esac
   else
-    echo "  $arq:$num  tipo: ${valor:0:10}…  <-- revisar"
+    echo "  $arq:$num  formato de segredo [valor omitido]  <-- revisar"
   fi
 done < <(grep -rIonE "${EXCLUIR[@]}" "$PADRAO" . 2>/dev/null | sort -u | head -200)
 [[ $achou -eq 0 ]] && echo "  (nada encontrado)"
@@ -44,11 +44,11 @@ git ls-files 2>/dev/null | grep -E '(^|/)\.env' | grep -v '\.example$' || echo "
 echo
 echo "== 3. Histórico do git: commits que adicionaram algo com formato de chave =="
 for termo in 'sb_secret_' 'APP_USR-' 'sk_live_' 'BEGIN PRIVATE KEY' 'AIza' 'ghp_' 'github_pat_'; do
-  commits=$(git log --all --format='  %h %ad %s' --date=short -S"$termo" 2>/dev/null | head -5)
+  commits=$(git log --all --format='  %h %ad' --date=short -S"$termo" 2>/dev/null | head -5)
   [[ -n "$commits" ]] && { echo "-- $termo"; echo "$commits"; }
 done
 # JWT de service_role no histórico: procura tokens e lê o papel
-git log --all -p -G'eyJ[A-Za-z0-9_-]{20,}\.eyJ' --format='COMMIT %h %ad %s' --date=short 2>/dev/null \
+git log --all -p -G'eyJ[A-Za-z0-9_-]{20,}\.eyJ' --format='COMMIT %h %ad' --date=short 2>/dev/null \
   | grep -oE '^COMMIT .*|eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}' \
   | while IFS= read -r l; do
       if [[ "$l" == COMMIT* ]]; then commit="${l#COMMIT }"; continue; fi
@@ -57,12 +57,12 @@ git log --all -p -G'eyJ[A-Za-z0-9_-]{20,}\.eyJ' --format='COMMIT %h %ad %s' --da
 
 echo
 echo "== 4. Valores de reserva em segredos (porta dos fundos) =="
-grep -rInE "${EXCLUIR[@]}" "(Deno\.env\.get|process\.env|import\.meta\.env)[(.\[]['\"]?[A-Z_]*(SECRET|KEY|TOKEN|PASSWORD)[A-Z_]*['\"]?[)\]]?\s*(\|\||\?\?)\s*['\"][^'\"]+['\"]" . 2>/dev/null | head -50 \
+grep -rIlE "${EXCLUIR[@]}" "(Deno\.env\.get|process\.env|import\.meta\.env)[(.\[]['\"]?[A-Z_]*(SECRET|KEY|TOKEN|PASSWORD)[A-Z_]*['\"]?[)\]]?\s*(\|\||\?\?)\s*['\"][^'\"]+['\"]" . 2>/dev/null | head -50 \
   || echo "  (nada encontrado)"
 
 echo
 echo "== 5. Segredo em variável pública do front (vai para o navegador) =="
-grep -rInE "${EXCLUIR[@]}" "(VITE_|NEXT_PUBLIC_)[A-Z_]*(SERVICE_ROLE|SECRET|PRIVATE)" . 2>/dev/null | head -20 || echo "  (nada encontrado)"
+grep -rIlE "${EXCLUIR[@]}" "(VITE_|NEXT_PUBLIC_)[A-Z_]*(SERVICE_ROLE|SECRET|PRIVATE)" . 2>/dev/null | head -20 || echo "  (nada encontrado)"
 
 cat <<'TXT'
 

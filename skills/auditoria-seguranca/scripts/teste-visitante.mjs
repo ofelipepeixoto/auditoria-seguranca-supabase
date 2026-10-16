@@ -1,37 +1,24 @@
-// Teste do visitante: com SÓ a chave pública (anon), tenta ler tudo o que o banco expõe a visitante e
-// marca respostas com dado pessoal. Só leitura:
-//   - GET em cada tabela/view (até 5 linhas + contagem);
-//   - GET em funções ESTÁVEIS sem argumento (o PostgREST recusa GET em função que altera dado);
-//   - listagem de cada bucket.
-// Nunca imprime valores: só nomes de colunas, contagens e o TIPO de dado encontrado.
-//
-// Uso:
-//   supabase db query --linked -f alvos-visitante.sql > alvos.json
-//   node teste-visitante.mjs <arquivo .env> alvos.json resultado.json
-// O .env precisa ter a URL e a chave pública (aceita VITE_*, NEXT_PUBLIC_* ou SUPABASE_*).
-import { readFileSync, writeFileSync } from 'node:fs';
+// Plano de visitante com escopo explícito; rede apenas com --execute.
+// Não garante ausência de efeitos de RPC/Functions. Use fixtures descartáveis.
+// Uso: node teste-visitante.mjs fixture.env alvos.json resultado.json --scope escopo.json [--execute]
+// Nunca imprime valores de linhas; metadados do relatório ainda podem ser privados.
+import { writeFileSync } from 'node:fs';
 
+import { lerJson, preparar, falhar } from './escopo-http.mjs';
+try {
 const [envPath, alvosPath, saidaPath = 'resultado-visitante.json'] = process.argv.slice(2);
 if (!envPath || !alvosPath) {
   console.error('Uso: node teste-visitante.mjs <.env> <alvos.json> [resultado.json]');
   process.exit(1);
 }
 
-const env = Object.fromEntries(
-  readFileSync(envPath, 'utf8').split('\n')
-    .map((l) => l.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/)).filter(Boolean)
-    .map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]),
-);
-const pegar = (...nomes) => nomes.map((n) => env[n]).find(Boolean);
-const URL_BASE = pegar('VITE_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_URL');
-const CHAVE = pegar('VITE_SUPABASE_ANON_KEY', 'VITE_SUPABASE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_ANON_KEY');
-if (!URL_BASE || !CHAVE) { console.error('URL ou chave pública não encontradas no .env'); process.exit(1); }
-const H = { apikey: CHAVE, Authorization: `Bearer ${CHAVE}` };
-
-const bruto = readFileSync(alvosPath, 'utf8');
-const alvos = JSON.parse(bruto.slice(bruto.indexOf('{'))).rows;
-
+const client = preparar(envPath, process.argv.slice(5));
+const alvos = lerJson(alvosPath).rows;
+if (!Array.isArray(alvos) || alvos.length > 100 || alvos.some(a => !a || typeof a.nome !== 'string' || !['tabela','funcao','bucket'].includes(a.tipo))) throw Error('alvos_invalidos');
+// RPCs nunca são inferidas como seguras por volatilidade; exigem escopo e fixture descartável.
+const pathFor = a => a.tipo === 'tabela' ? `/rest/v1/${encodeURIComponent(a.nome)}?select=*&limit=5` : a.tipo === 'funcao' ? `/rest/v1/rpc/${encodeURIComponent(a.nome)}` : `/storage/v1/object/list/${encodeURIComponent(a.nome)}`;
+for (const a of alvos) client.validar(pathFor(a), a.tipo === 'bucket' ? 'POST' : 'GET');
+if (!client.execute) { console.log(`PLANO: ${alvos.length} recursos; nenhuma requisição enviada.`); process.exit(0); }
 const PADROES = {
   cpf: /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/,
   email: /[^\s@"]+@[^\s@"]+\.[a-z]{2,}/i,
@@ -58,13 +45,12 @@ function analisar(linhas) {
 }
 
 async function pedir(caminho, opcoes = {}) {
-  const r = await fetch(URL_BASE + caminho, { ...opcoes, headers: { ...H, ...(opcoes.headers || {}) } });
-  const texto = await r.text();
-  let corpo = null; try { corpo = JSON.parse(texto); } catch { /* não é JSON */ }
-  return { status: r.status, corpo, total: r.headers.get('content-range') };
+  const r = await client.pedir(caminho, opcoes);
+  let corpo = null; try { corpo = JSON.parse(r.texto); } catch { throw Error('json_invalido'); }
+  return { status:r.status, corpo, total:r.total };
 }
 
-const resultado = { quando: new Date().toISOString(), tabelas: [], funcoes_chamadas: [], funcoes_nao_chamadas: [], buckets: [] };
+const resultado = { schema_version: 1, identidade: 'visitante; chave declarada, assinatura não verificada localmente', cobertura: 'somente recursos permitidos; amostra até 5 linhas; não certifica RLS', quando: new Date().toISOString(), tabelas: [], funcoes_chamadas: [], funcoes_nao_chamadas: [], buckets: [] };
 
 for (const a of alvos.filter((x) => x.tipo === 'tabela')) {
   const r = await pedir(`/rest/v1/${encodeURIComponent(a.nome)}?select=*&limit=5`, { headers: { Prefer: 'count=exact', Range: '0-4' } });
@@ -76,7 +62,7 @@ for (const a of alvos.filter((x) => x.tipo === 'tabela')) {
 for (const a of alvos.filter((x) => x.tipo === 'funcao')) {
   if (a.nargs === 0 && (a.volatil === 's' || a.volatil === 'i')) {
     const r = await pedir(`/rest/v1/rpc/${encodeURIComponent(a.nome)}`);
-    const linhas = Array.isArray(r.corpo) ? r.corpo : r.corpo && typeof r.corpo === 'object' ? [r.corpo] : [];
+    const linhas = Array.isArray(r.corpo) ? r.corpo.map(v => v !== null && typeof v === 'object' ? v : {valor: v}) : r.corpo === null ? [] : [typeof r.corpo === 'object' ? r.corpo : {valor:r.corpo}];
     resultado.funcoes_chamadas.push({ nome: a.nome, definer: a.definer, status: r.status, itens: linhas.length, ...(linhas.length ? analisar(linhas) : {}) });
   } else {
     resultado.funcoes_nao_chamadas.push({ nome: a.nome, definer: a.definer, nargs: a.nargs, volatil: a.volatil });
@@ -91,7 +77,7 @@ for (const a of alvos.filter((x) => x.tipo === 'bucket')) {
   resultado.buckets.push({ bucket: a.nome, publico: a.definer, status: r.status, itens_listados: Array.isArray(r.corpo) ? r.corpo.length : null });
 }
 
-writeFileSync(saidaPath, JSON.stringify(resultado, null, 2));
+writeFileSync(saidaPath, JSON.stringify(resultado, null, 2), { mode:0o600, flag:'wx' });
 
 const leem = resultado.tabelas.filter((t) => Number(t.linhas_visiveis) > 0);
 console.log(`Tabelas/views testadas: ${resultado.tabelas.length}; com linhas visíveis ao visitante: ${leem.length}`);
@@ -112,3 +98,5 @@ for (const b of resultado.buckets) {
   console.log(`- ${b.bucket}${b.publico ? ' (público)' : ''}: status ${b.status}, itens listados ${b.itens_listados}${alerta}`);
 }
 console.log('\nLembrete: tabela vazia devolve 0 mesmo aberta. Confira a policy (consultas.sql §2) antes de concluir "protegido".');
+
+} catch { falhar(); }

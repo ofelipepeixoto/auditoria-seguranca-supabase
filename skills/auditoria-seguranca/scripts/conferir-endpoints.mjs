@@ -1,37 +1,26 @@
-// Confere, como VISITANTE (só a chave pública e tokens FALSOS), se cada endpoint responde como esperado.
-// Use antes e depois de publicar correções. Não usa token real nem dado de cliente.
-//
-// Uso:  node conferir-endpoints.mjs <.env> <casos.json>
-// casos.json: lista de { "nome", "caminho", "metodo"?, "corpo"?, "esperado": [401, 403], "nao_conter"?: ["cpf"] }
-//   - caminho começa com /functions/v1/... ou /rest/v1/rpc/...
-//   - "esperado": status aceitos; "nao_conter": textos que NÃO podem aparecer na resposta.
-// Veja conferir-endpoints.exemplo.json.
-import { readFileSync } from 'node:fs';
-
-const [envPath, casosPath] = process.argv.slice(2);
-if (!envPath || !casosPath) { console.error('Uso: node conferir-endpoints.mjs <.env> <casos.json>'); process.exit(1); }
-
-const env = Object.fromEntries(
-  readFileSync(envPath, 'utf8').split('\n')
-    .map((l) => l.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/)).filter(Boolean)
-    .map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]),
-);
-const pegar = (...n) => n.map((k) => env[k]).find(Boolean);
-const URL_BASE = pegar('VITE_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_URL');
-const CHAVE = pegar('VITE_SUPABASE_ANON_KEY', 'VITE_SUPABASE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_ANON_KEY');
-const H = { apikey: CHAVE, Authorization: `Bearer ${CHAVE}`, 'Content-Type': 'application/json' };
-
-const casos = JSON.parse(readFileSync(casosPath, 'utf8'));
-let falhas = 0;
-for (const c of casos) {
-  const r = await fetch(URL_BASE + c.caminho, { method: c.metodo || 'POST', headers: H, body: c.corpo ? JSON.stringify(c.corpo) : '{}' });
-  const texto = (await r.text()).slice(0, 300).replace(/\s+/g, ' ');
-  const statusOk = (c.esperado || []).includes(r.status);
-  const vazou = (c.nao_conter || []).filter((t) => texto.toLowerCase().includes(t.toLowerCase()));
-  const ok = statusOk && vazou.length === 0;
-  if (!ok) falhas++;
-  console.log(`${ok ? 'OK   ' : 'FALHA'} ${c.nome}: ${r.status} ${vazou.length ? `(contém: ${vazou.join(', ')}) ` : ''}${texto.slice(0, 140)}`);
-}
-console.log(`\n${casos.length - falhas} de ${casos.length} como esperado.`);
-process.exit(falhas ? 1 : 0);
+// Plano por padrão. Rede apenas com --scope escopo.json --execute.
+import { lerJson, preparar, falhar } from './escopo-http.mjs';
+try {
+  const [envPath, casosPath, ...args] = process.argv.slice(2);
+  const client = preparar(envPath, args);
+  const casos = lerJson(casosPath);
+  if (!Array.isArray(casos) || !casos.length || casos.length > 100) throw Error('casos_invalidos');
+  for (const c of casos) {
+    client.validar(c.caminho, c.metodo || 'GET');
+    if (!Array.isArray(c.esperado) || !c.esperado.length || c.esperado.some(s => !Number.isInteger(s) || s < 100 || s > 599) || (c.nao_conter && (!Array.isArray(c.nao_conter) || c.nao_conter.some(t => typeof t !== 'string' || !t)))) throw Error('caso_invalido');
+  }
+  if (!client.execute) console.log(`PLANO: ${casos.length} casos; nenhuma requisição enviada.`);
+  else {
+    let falhas = 0;
+    for (const [indice, c] of casos.entries()) {
+      const method = c.metodo || 'GET';
+      const r = await client.pedir(c.caminho, { method, ...(method === 'POST' ? {headers:{'Content-Type':'application/json'}, body:JSON.stringify(c.corpo ?? {})} : {}) });
+      const vazou = (c.nao_conter || []).filter(t => r.texto.toLowerCase().includes(t.toLowerCase())).length;
+      const ok = c.esperado.includes(r.status) && !vazou;
+      if (!ok) falhas++;
+      console.log(`${ok ? 'OK' : 'FALHA'} caso ${indice + 1}: status=${r.status}; marcadores_proibidos=${vazou}`);
+    }
+    console.log(`${casos.length - falhas} de ${casos.length} como esperado. Isso não certifica RLS.`);
+    process.exitCode = falhas ? 1 : 0;
+  }
+} catch { falhar(); }
